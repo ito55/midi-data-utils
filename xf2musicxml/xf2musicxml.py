@@ -83,8 +83,10 @@ def _normalize_chord_figure(figure: str) -> str:
     figure = figure.replace("m7(11)", "m11")
     figure = figure.replace("m(maj7,9)", "m(maj9)")
 
-    # music21 uses '-' for flat and '--' for double-flat.
-    return figure.replace("bb", "--").replace("b", "-")
+    # music21 uses '-' for flat and '--' for double-flat in Note names (Roots/Bass).
+    # We must NOT replace 'b' in chord extensions (e.g., 'm7b5', '7b9').
+    figure = re.sub(r'(?<=[A-G])bb', '--', figure)
+    return re.sub(r'(?<=[A-G])b', '-', figure)
 
 def _get_title_from_midi(mf: mido.MidiFile) -> str | None:
     """
