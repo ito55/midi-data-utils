@@ -120,9 +120,11 @@ def main():
             if ch not in ch_base_pc:
                 ch_base_pc[ch] = msg.program # 最初の音色を記録
             ch_current_pc[ch] = msg.program
+        
+        current_pc = ch_current_pc[ch]
 
         # 分類ロジック
-        is_extra = (ch in ch_base_pc and ch_current_pc[ch] != ch_base_pc[ch])
+        is_extra = (ch in ch_base_pc and current_pc != ch_base_pc[ch])
 
         # 統計収集
         if msg.type == 'program_change':
@@ -138,10 +140,26 @@ def main():
             if msg.type == 'note_on' and msg.velocity > 0:
                 # 直前のCC状態をスナップショットとして挿入
                 for cc_num, cc_val in ch_current_cc[ch].items():
-                    extra_events_pool.append({'tick': tick, 'msg': Message('control_change', channel=ch, control=cc_num, value=cc_val)})
-                extra_events_pool.append({'tick': tick, 'msg': Message('program_change', channel=ch, program=ch_current_pc[ch])})
+                    extra_events_pool.append({
+                        'tick': tick, 
+                        'msg': Message('control_change', channel=ch, control=cc_num, value=cc_val),
+                        'orig_ch': ch,
+                        'pc': current_pc
+                    })
+                extra_events_pool.append({
+                    'tick': tick, 
+                    'msg': Message('program_change', channel=ch, program=current_pc),
+                    'orig_ch': ch,
+                    'pc': current_pc
+                })
             
-            extra_events_pool.append(item)
+            # 後続のチャンネル割り当て用にPCと元のチャンネル情報を付与してプールに追加
+            extra_events_pool.append({
+                'tick': tick,
+                'msg': item['msg'], # msgオブジェクト自体は共有（channel書き換えは後で行う）
+                'orig_ch': ch,
+                'pc': current_pc
+            })
 
     # 2. Cleanedファイルの保存
     cleaned_mid = MidiFile(ticks_per_beat=ticks_per_beat)
@@ -157,7 +175,7 @@ def main():
     cleaned_mid.save(cleaned_out)
     print(f"Generated: {cleaned_out}")
 
-    ch_map = {} # {original_ch: new_ch}
+    ch_map = {} # {(original_ch, pc): new_ch}
     # 3. Extraファイルの生成（ch1から詰める）
     if extra_events_pool:
         # 簡易的に1つのファイルにch1から詰める実装（16chを超える場合は拡張が必要）
@@ -165,12 +183,14 @@ def main():
         next_free_ch = 0
 
         for item in sorted(extra_events_pool, key=lambda x: x['tick']):
-            orig_ch = item['msg'].channel
-            if orig_ch not in ch_map:
-                ch_map[orig_ch] = next_free_ch
+            key = (item['orig_ch'], item['pc'])
+            
+            if key not in ch_map:
+                ch_map[key] = next_free_ch
                 next_free_ch += 1
             
-            item['msg'].channel = ch_map[orig_ch]
+            # 16chを超える場合はラップアラウンド（簡易対処）
+            item['msg'].channel = ch_map[key] % 16
             final_extra_events.append(item)
             
         create_extra_track(final_extra_events, base_name, 1)
@@ -185,17 +205,23 @@ def main():
             summary_lines.append(f"ch{ch+1}: none")
         else:
             main_names = [get_instrument_name(pc) for pc in sorted(stats['main'])]
-            extra_names = [get_instrument_name(pc) for pc in sorted(stats['extra'])]
+            
+            extra_info_list = []
+            for pc in sorted(stats['extra']):
+                name = get_instrument_name(pc)
+                # マッピング情報の取得
+                key = (ch, pc)
+                if key in ch_map:
+                    mapped_ch = (ch_map[key] % 16) + 1
+                    extra_filename = os.path.basename(f"{base_name}_extra1.mid")
+                    extra_info_list.append(f"{name} -> {extra_filename} ch{mapped_ch}")
+                else:
+                    extra_info_list.append(name)
+            
             main_str = f"main: {', '.join(main_names) if main_names else 'Default'}"
-            extra_str = f"extra: {', '.join(extra_names)}"
+            extra_str = f"extra: {', '.join(extra_info_list)}"
             
-            export_info = ""
-            if ch in ch_map:
-                mapped_ch = ch_map[ch] + 1
-                extra_filename = os.path.basename(f"{base_name}_extra1.mid")
-                export_info = f" -> export to {extra_filename} ch{mapped_ch}"
-            
-            summary_lines.append(f"ch{ch+1}: {main_str}, {extra_str}{export_info}")
+            summary_lines.append(f"ch{ch+1}: {main_str}, {extra_str}")
 
     summary_text = "\n".join(summary_lines)
     print("\n" + summary_text)
