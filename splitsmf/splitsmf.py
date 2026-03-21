@@ -175,25 +175,35 @@ def main():
     cleaned_mid.save(cleaned_out)
     print(f"Generated: {cleaned_out}")
 
-    ch_map = {} # {(original_ch, pc): new_ch}
-    # 3. Extraファイルの生成（ch1から詰める）
+    ch_map = {} # {(original_ch, pc): global_slot_index}
+    # 3. Extraファイルの生成（必要に応じて複数ファイルに分割）
     if extra_events_pool:
-        # 簡易的に1つのファイルにch1から詰める実装（16chを超える場合は拡張が必要）
-        final_extra_events = []
-        next_free_ch = 0
+        extra_files_events = {} # {file_index: [events]}
+        next_free_slot = 0
 
         for item in sorted(extra_events_pool, key=lambda x: x['tick']):
             key = (item['orig_ch'], item['pc'])
             
             if key not in ch_map:
-                ch_map[key] = next_free_ch
-                next_free_ch += 1
+                ch_map[key] = next_free_slot
+                next_free_slot += 1
             
-            # 16chを超える場合はラップアラウンド（簡易対処）
-            item['msg'].channel = ch_map[key] % 16
-            final_extra_events.append(item)
+            global_slot_idx = ch_map[key]
+            # ch10(index=9)をスキップするため、1ファイルあたり15chで計算
+            file_idx = global_slot_idx // 15
+            slot_in_file = global_slot_idx % 15
             
-        create_extra_track(final_extra_events, base_name, 1)
+            # 0-8 -> ch1-9, 9-14 -> ch11-16
+            local_ch = slot_in_file if slot_in_file < 9 else slot_in_file + 1
+            
+            item['msg'].channel = local_ch
+            
+            if file_idx not in extra_files_events:
+                extra_files_events[file_idx] = []
+            extra_files_events[file_idx].append(item)
+            
+        for f_idx in sorted(extra_files_events.keys()):
+            create_extra_track(extra_files_events[f_idx], base_name, f_idx + 1)
 
     # レポート出力
     summary_lines = ["--- Split Summary ---"]
@@ -212,8 +222,15 @@ def main():
                 # マッピング情報の取得
                 key = (ch, pc)
                 if key in ch_map:
-                    mapped_ch = (ch_map[key] % 16) + 1
-                    extra_filename = os.path.basename(f"{base_name}_extra1.mid")
+                    global_slot_idx = ch_map[key]
+                    # ch10(index=9)をスキップするため、1ファイルあたり15chで計算
+                    file_idx = (global_slot_idx // 15) + 1
+                    slot_in_file = global_slot_idx % 15
+                    
+                    # 0-8 -> ch1-9, 9-14 -> ch11-16
+                    local_ch = slot_in_file if slot_in_file < 9 else slot_in_file + 1
+                    mapped_ch = local_ch + 1 # 1-based channel for display
+                    extra_filename = os.path.basename(f"{base_name}_extra{file_idx}.mid")
                     extra_info_list.append(f"{name} -> {extra_filename} ch{mapped_ch}")
                 else:
                     extra_info_list.append(name)
